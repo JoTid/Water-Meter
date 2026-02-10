@@ -1,0 +1,153 @@
+esphome:
+  name: water-meter
+  friendly_name: Water Meter
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+    # type: esp-idf
+  # Fixes the warning in the log
+  variant: ESP32
+  # If your chip is newer, this enables modern instructions
+  # minimum_chip_revision: 3
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret watermeter_ha_api_key
+
+ota:
+  - platform: esphome
+    password: !secret watermeter_ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # manual IP added because the ESP is on a different network
+  manual_ip:
+    # Set this to the IP of the ESP
+    static_ip: !secret watermeter_static_ip
+    # Set this to the IP address of the router. Often ends with .1
+    gateway: !secret watermeter_gateway
+    # The subnet of the network. 255.255.255.0 works for most home networks.
+    subnet: !secret watermeter_subnet
+
+  power_save_mode: none
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Water Meter AP"
+    password: !secret watermeter_ap_password
+
+# Add this section to provide the required time source for the total_daily_energy sensor
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+
+# Enable logging
+logger:
+  level: INFO
+
+captive_portal:
+
+# Global variable to store the meter reading in m3
+# restore_value: yes ensures the value survives a reboot
+globals:
+  - id: total_water_m3
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+  - id: water_offset_l
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+  - id: last_total_pulse
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+
+number:
+  - platform: template
+    name: "Sync Meter Reading"
+    id: sync_meter_reading
+    icon: "mdi:water-sync"
+    unit_of_measurement: "m³"
+    min_value: 0
+    max_value: 99999
+    step: 0.001
+    mode: box
+    optimistic: true
+    on_value:
+      then:
+        - lambda: |-
+            id(total_water_m3) = x;
+            // Align the offset: (m3 * 1000) - current raw pulses
+            id(water_offset_l) = (x * 1000.0) - id(water_consumption_pulse_raw).state;
+        - component.update: water_meter_total
+        - component.update: water_consumption_total_display
+
+sensor:
+  - platform: pulse_counter
+    pin: 
+      number: GPIO21
+      mode: INPUT_PULLUP
+    name: "Flow"
+    id: water_flow
+    unit_of_measurement: "L/min"
+    icon: "mdi:water-pump"
+    update_interval: 60s
+    # 1 Pulse = 1 Liter. Pulse_counter calculates pulses/min.
+    
+    total:
+      id: water_consumption_pulse_raw
+      internal: true # We hide the raw pulse count
+      on_value:
+        then:
+          - lambda: |-
+              float current_total = x;
+              if (current_total > id(last_total_pulse)) {
+                id(total_water_m3) += (current_total - id(last_total_pulse)) * 0.001;
+                id(last_total_pulse) = current_total;
+              } else if (current_total < id(last_total_pulse)) {
+                id(last_total_pulse) = current_total;
+              }
+          - component.update: water_meter_total
+          - component.update: water_consumption_total_display
+
+  # The actual Meter Reading (e.g., 123.456 m3)
+  - platform: template
+    name: "Meter Reading"
+    id: water_meter_total
+    unit_of_measurement: "m³"
+    icon: "mdi:gauge"
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 3
+    lambda: 'return id(total_water_m3);'
+    update_interval: never
+
+  # This is the "Total" sensor for Home Assistant/Energy Dashboard
+  - platform: template
+    name: "Consumption Total"
+    id: water_consumption_total_display
+    unit_of_measurement: "L"
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 0
+    # Formula: Raw pulses + Offset defined during setup
+    lambda: 'return id(water_consumption_pulse_raw).state + id(water_offset_l);'
+    update_interval: never
+
+  # Daily Consumption (L)
+  - platform: total_daily_energy
+    name: "Consumption Today"
+    power_id: water_flow
+    unit_of_measurement: "L"
+    icon: "mdi:water-outline"
+    accuracy_decimals: 1
+    # total_daily_energy needs the time component to reset at midnight
+    time_id: homeassistant_time
+    filters:
+      - multiply: 0.01666666667
