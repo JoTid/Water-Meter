@@ -8,6 +8,8 @@ And add all required **SECRET** values to the `secrets.yaml`.
 Finally, you can add a device to the ESPHome integration that provides the following possibilities:
 ![ha_device](./docs/ha_device.png)
 
+In my implementation, I attempted to implement a real-time flow, which appears to function quite well at first glance.
+
 Thanks to [Home Assitant Comunity](https://community.home-assistant.io/t/build-a-water-meter-with-esphome-and-proximity-sensor-no-soldering-required/387686)
 and [Pieter Brinkman](https://www.pieterbrinkman.com/2022/02/02/build-a-cheap-water-usage-sensor-using-esphome-home-assistant-and-a-proximity-sensor/)
 
@@ -30,6 +32,15 @@ The modification consists of adding additional tabs to securely attach the holde
 
 Wiring was done according to the following plan:
 ![HW Wiring](./docs/hw_wirering.png)
+
+Finally I get following result:
+![HW Wiring Real](./docs/hw_wirering_real.png)
+
+## Final Installation
+
+The bracket can be adjusted very easily, making it simple to position the sensor.
+The installation on the water meter looks like this for me:
+![HW Installation](./docs/hw_installation.png)
 
 ## Build target firmware on a Host
 

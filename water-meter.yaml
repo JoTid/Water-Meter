@@ -1,12 +1,19 @@
 esphome:
   name: water-meter
   friendly_name: Water Meter
+  on_boot:
+      priority: -10 # Executed after all components have been initialized
+      then:
+        - lambda: |-
+            // Load the stored values into the sensors immediately.
+            id(water_meter_total).publish_state(id(total_water_m3));
+            id(water_consumption_total).publish_state(id(total_water_m3) * 1000.0);
 
 esp32:
   board: esp32dev
   framework:
-    type: arduino
-    # type: esp-idf
+    type: esp-idf
+
   # Fixes the warning in the log
   variant: ESP32
   # If your chip is newer, this enables modern instructions
@@ -59,14 +66,9 @@ globals:
     type: float
     restore_value: yes
     initial_value: '0.0'
-  - id: water_offset_l
-    type: float
-    restore_value: yes
-    initial_value: '0.0'
-  - id: last_total_pulse
-    type: float
-    restore_value: yes
-    initial_value: '0.0'
+  - id: last_pulse_time
+    type: uint32_t
+    initial_value: '0'
 
 number:
   - platform: template
@@ -83,40 +85,51 @@ number:
       then:
         - lambda: |-
             id(total_water_m3) = x;
-            // Align the offset: (m3 * 1000) - current raw pulses
-            id(water_offset_l) = (x * 1000.0) - id(water_consumption_pulse_raw).state;
-        - component.update: water_meter_total
-        - component.update: water_consumption_total_display
+            // Update all dependent sensors immediately
+            id(water_meter_total).publish_state(x);
+            id(water_consumption_total).publish_state(x * 1000.0);
 
-sensor:
-  - platform: pulse_counter
-    pin: 
+binary_sensor:
+  - platform: gpio
+    pin:
       number: GPIO21
       mode: INPUT_PULLUP
+    id: water_pulse_pin
+    internal: true
+    filters:
+      - delayed_on: 50ms
+    on_press:
+      then:
+        - lambda: |-
+            uint32_t now = millis();
+            if (id(last_pulse_time) != 0) {
+              uint32_t diff = now - id(last_pulse_time);
+              // Plausibility check: Ignore pulses faster than 500 ms (120 L/min)
+              if (diff > 500) { 
+                float instant_flow = 60000.0 / diff;
+                id(water_flow).publish_state(instant_flow);
+              }
+            }
+            id(last_pulse_time) = now;
+
+            // Increment meter reading m3
+            id(total_water_m3) += 0.001;
+            
+            // Push values to HA immediately
+            id(water_meter_total).publish_state(id(total_water_m3));
+            id(water_consumption_total).publish_state(id(total_water_m3) * 1000.0);
+
+sensor:
+  - platform: template
     name: "Flow"
     id: water_flow
     unit_of_measurement: "L/min"
     icon: "mdi:water-pump"
+    accuracy_decimals: 2
     update_interval: 60s
-    # 1 Pulse = 1 Liter. Pulse_counter calculates pulses/min.
-    
-    total:
-      id: water_consumption_pulse_raw
-      internal: true # We hide the raw pulse count
-      on_value:
-        then:
-          - lambda: |-
-              float current_total = x;
-              if (current_total > id(last_total_pulse)) {
-                id(total_water_m3) += (current_total - id(last_total_pulse)) * 0.001;
-                id(last_total_pulse) = current_total;
-              } else if (current_total < id(last_total_pulse)) {
-                id(last_total_pulse) = current_total;
-              }
-          - component.update: water_meter_total
-          - component.update: water_consumption_total_display
+    # Sets the flow to 0 if no pulse was detected for 60 seconds
+    lambda: 'return 0.0;' 
 
-  # The actual Meter Reading (e.g., 123.456 m3)
   - platform: template
     name: "Meter Reading"
     id: water_meter_total
@@ -128,19 +141,16 @@ sensor:
     lambda: 'return id(total_water_m3);'
     update_interval: never
 
-  # This is the "Total" sensor for Home Assistant/Energy Dashboard
   - platform: template
     name: "Consumption Total"
-    id: water_consumption_total_display
+    id: water_consumption_total
     unit_of_measurement: "L"
     device_class: water
     state_class: total_increasing
     accuracy_decimals: 0
-    # Formula: Raw pulses + Offset defined during setup
-    lambda: 'return id(water_consumption_pulse_raw).state + id(water_offset_l);'
+    lambda: 'return id(total_water_m3) * 1000.0;'
     update_interval: never
 
-  # Daily Consumption (L)
   - platform: total_daily_energy
     name: "Consumption Today"
     power_id: water_flow
